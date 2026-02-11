@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KEEN Cash-In Dashboard</title>
+    <!-- Dependencies -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Google Visualization API - Necessary for local file access -->
+    <script src="https://www.gstatic.com/charts/loader.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;900&display=swap');
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background-color: #0a0a0c; 
+            color: #e2e8f0;
+            margin: 0;
+            overflow-x: hidden;
+        }
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(16, 185, 129, 0.2); border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(16, 185, 129, 0.4); }
+        
+        select { cursor: pointer; }
+        option { background-color: #0a0a0c; color: #94a3b8; }
+
+        .chart-glow {
+            filter: drop-shadow(0 0 8px rgba(16, 185, 129, 0.4));
+        }
+        
+        .point-transition {
+            transition: r 0.2s ease, fill 0.2s ease;
+        }
+
+        .tooltip-card {
+            box-shadow: 0 20px 60px rgba(0,0,0,1);
+            border: 1px solid rgba(255,255,255,0.15);
+            backdrop-filter: blur(28px);
+            z-index: 9999;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        const App = () => {
+            const [data, setData] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
+            const [view, setView] = useState('calendar');
+            const [currentMonth, setCurrentMonth] = useState(new Date());
+            const [searchTerm, setSearchTerm] = useState('');
+
+            // CONFIGURATION
+            const SHEET_ID = '1GgGB9o_ZtkCpuKw2r1543JsurqHL5Pbg6djY5Zt_X_o';
+            const GID = '0';
+
+            useEffect(() => {
+                if (window.google) {
+                    google.charts.load('current', { packages: ['corechart'] });
+                    google.charts.setOnLoadCallback(fetchDataViaGViz);
+                } else {
+                    setError("Could not load Google libraries. Please check your internet connection.");
+                }
+            }, []);
+
+            const fetchDataViaGViz = () => {
+                setLoading(true);
+                const query = new google.visualization.Query(
+                    `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?gid=${GID}`
+                );
+
+                query.send((response) => {
+                    if (response.isError()) {
+                        setError(`Access Denied: ${response.getMessage()}. Ensure the sheet is Shared to "Anyone with the link can view".`);
+                        setLoading(false);
+                        return;
+                    }
+
+                    const dt = response.getDataTable();
+                    const rows = [];
+                    const cols = [];
+                    
+                    for (let i = 0; i < dt.getNumberOfColumns(); i++) {
+                        cols.push(dt.getColumnLabel(i) || `Col_${i}`);
+                    }
+
+                    for (let i = 0; i < dt.getNumberOfRows(); i++) {
+                        const row = {};
+                        for (let j = 0; j < dt.getNumberOfColumns(); j++) {
+                            row[cols[j]] = dt.getValue(i, j);
+                            row[`_${cols[j]}_fmt`] = dt.getFormattedValue(i, j);
+                        }
+                        rows.push(row);
+                    }
+
+                    setData(rows);
+                    setError(null);
+                    setLoading(false);
+                });
+            };
+
+            const getColValue = (item, keywords) => {
+                const keys = Object.keys(item);
+                const sortedKeywords = [...keywords].sort((a, b) => b.length - a.length);
+                const targetKey = keys.find(k => {
+                    const normalizedK = k.toLowerCase().replace(/[\n\r\s]+/g, ' ').trim();
+                    return sortedKeywords.some(kw => normalizedK === kw.toLowerCase().trim() || normalizedK.includes(kw.toLowerCase().trim()));
+                });
+                return targetKey ? item[targetKey] : null;
+            };
+
+            const getAmount = (item) => {
+                const val = getColValue(item, ['total (vat + wht)', 'total vat']) || 0;
+                if (typeof val === 'number') return val;
+                const cleanVal = val.toString().replace(/[฿,$\s]/g, '');
+                const num = parseFloat(cleanVal);
+                return isNaN(num) ? 0 : num;
+            };
+
+            const getItemDate = (item) => {
+                const val = getColValue(item, ['projection date', 'date']);
+                if (!val) return null;
+                const d = new Date(val);
+                return isNaN(d.getTime()) ? null : d;
+            };
+
+            const stats = useMemo(() => {
+                const selectedYear = currentMonth.getFullYear();
+                const monthlyBreakdown = Array(12).fill(0);
+                
+                const yearlyData = data.filter(item => {
+                    const d = getItemDate(item);
+                    if (d && d.getFullYear() === selectedYear) {
+                        monthlyBreakdown[d.getMonth()] += getAmount(item);
+                        return true;
+                    }
+                    return false;
+                });
+
+                const monthlyData = yearlyData.filter(item => {
+                    const d = getItemDate(item);
+                    return d && d.getMonth() === currentMonth.getMonth();
+                });
+                
+                return {
+                    yearlyTotal: yearlyData.reduce((acc, curr) => acc + getAmount(curr), 0),
+                    monthlyTotal: monthlyData.reduce((acc, curr) => acc + getAmount(curr), 0),
+                    monthlyCount: monthlyData.length,
+                    monthlyBreakdown,
+                    selectedYear,
+                    maxMonthlyValue: Math.max(...monthlyBreakdown, 1000)
+                };
+            }, [data, currentMonth]);
+
+            const filteredData = useMemo(() => {
+                return data.filter(item => 
+                    Object.values(item).some(val => val && val.toString().toLowerCase().includes(searchTerm.toLowerCase()))
+                );
+            }, [data, searchTerm]);
+
+            const calendarDays = useMemo(() => {
+                const days = [];
+                const totalDays = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 0).getDate();
+                const firstDay = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), 1).getDay();
+                for (let i = 0; i < firstDay; i++) days.push({ day: null, items: [], total: 0 });
+                for (let d = 1; d <= totalDays; d++) {
+                    const items = data.filter(item => {
+                        const pDate = getItemDate(item);
+                        return pDate && pDate.getDate() === d && pDate.getMonth() === currentMonth.getMonth() && pDate.getFullYear() === currentMonth.getFullYear();
+                    });
+                    days.push({ day: d, items, total: items.reduce((acc, curr) => acc + getAmount(curr), 0) });
+                }
+                return days;
+            }, [currentMonth, data]);
+
+            const handleMonthSelect = (monthIndex) => {
+                const next = new Date(currentMonth);
+                next.setMonth(monthIndex);
+                setCurrentMonth(next);
+            };
+
+            useEffect(() => {
+                if (window.lucide) window.lucide.createIcons();
+            }, [loading, view, currentMonth]);
+
+            if (loading) return (
+                <div className="min-h-screen bg-[#0a0a0c] flex flex-col items-center justify-center space-y-4 text-emerald-500 font-bold tracking-[.4em] text-sm uppercase">
+                    <div className="w-12 h-12 border-4 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin"></div>
+                    <div>KEEN System Booting...</div>
+                </div>
+            );
+
+            if (error) return (
+                <div className="min-h-screen bg-[#0a0a0c] flex items-center justify-center p-6 text-center">
+                    <div className="max-w-xl w-full bg-red-950/10 border border-red-500/30 p-10 rounded-[3rem] shadow-2xl">
+                        <i data-lucide="shield-alert" className="text-red-500 w-12 h-12 mx-auto mb-6"></i>
+                        <h2 className="text-2xl font-black text-white uppercase tracking-tight mb-4">Connection Blocked</h2>
+                        <div className="bg-black/40 rounded-2xl p-4 text-left border border-white/5 mb-6 text-slate-300 text-sm">{error}</div>
+                        <button onClick={() => window.location.reload()} className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-3 px-8 rounded-xl">Retry Connection</button>
+                    </div>
+                </div>
+            );
+
+            // Chart Constants
+            const monthsNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            const chartLeftPad = 80;
+            const chartRightPad = 40;
+            const chartBottomPad = 40;
+            const chartTopPad = 40;
+            const plotWidth = 1000 - chartLeftPad - chartRightPad;
+            const plotHeight = 250 - chartTopPad - chartBottomPad;
+
+            return (
+                <div className="min-h-screen p-4 md:p-8 bg-[#0a0a0c] pb-32">
+                    <nav className="max-w-7xl mx-auto flex flex-col lg:flex-row justify-between items-center mb-10 gap-6">
+                        <div className="flex items-center gap-3">
+                            <div className="p-3 bg-emerald-600/20 rounded-2xl border border-emerald-500/30">
+                                <i data-lucide="trending-up" className="text-emerald-400 w-6 h-6"></i>
+                            </div>
+                            <div>
+                                <h1 className="text-xl font-black text-white uppercase tracking-tighter">KEEN <span className="text-emerald-500">Cash-In</span></h1>
+                                <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Cash-In Financial Dashboard</p>
+                            </div>
+                        </div>
+
+                        <div className="flex bg-[#16161a] p-1.5 rounded-2xl border border-white/5 items-center gap-4 shadow-xl">
+                            <div className="flex bg-black/40 p-1 rounded-xl">
+                                <button onClick={() => setView('calendar')} className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${view === 'calendar' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20' : 'text-slate-500 hover:text-white'}`}>CALENDAR</button>
+                                <button onClick={() => setView('table')} className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${view === 'table' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20' : 'text-slate-500 hover:text-white'}`}>LEDGER</button>
+                            </div>
+                            <div className="flex gap-2 pr-2">
+                                <select value={currentMonth.getMonth()} onChange={(e) => handleMonthSelect(parseInt(e.target.value))} className="bg-transparent text-xs font-bold text-slate-400 focus:outline-none uppercase">
+                                    {monthsNames.map((m, i) => <option key={m} value={i} className="bg-[#0a0a0c]">{m}</option>)}
+                                </select>
+                                <select value={currentMonth.getFullYear()} onChange={(e) => {
+                                    const next = new Date(currentMonth);
+                                    next.setFullYear(e.target.value);
+                                    setCurrentMonth(next);
+                                }} className="bg-transparent text-xs font-bold text-slate-400 focus:outline-none">
+                                    {[2024, 2025, 2026, 2027].map(y => <option key={y} value={y} className="bg-[#0a0a0c]">{y}</option>)}
+                                </select>
+                            </div>
+                        </div>
+
+                        <div className="relative w-full lg:w-64">
+                            <i data-lucide="search" className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600 w-4 h-4"></i>
+                            <input type="text" placeholder="Search data points..." className="w-full bg-[#16161a] border border-white/5 rounded-xl py-2 pl-10 pr-4 text-xs focus:outline-none focus:border-emerald-500/50" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                        </div>
+                    </nav>
+
+                    <main className="max-w-7xl mx-auto space-y-6">
+                        
+                        {/* LINE GRAPH */}
+                        <div className="bg-[#16161a] border border-white/5 rounded-3xl p-8 shadow-lg flex flex-col h-[400px]">
+                            <div className="flex justify-between items-center mb-6">
+                                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.2em]">Monthly Flux Trajectory ({stats.selectedYear})</p>
+                                <div className="flex items-center gap-6">
+                                    <div className="flex items-center gap-2 text-emerald-400 text-[9px] font-black uppercase tracking-tighter">
+                                        <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div>
+                                        <span>Total (VAT + WHT) Inflow</span>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div className="flex-1 relative">
+                                <svg className="w-full h-full overflow-visible" viewBox="0 0 1000 250" preserveAspectRatio="none">
+                                    {[0, 0.25, 0.5, 0.75, 1].map(v => {
+                                        const y = chartTopPad + (1 - v) * plotHeight;
+                                        const val = v * stats.maxMonthlyValue;
+                                        return (
+                                            <g key={v}>
+                                                <line x1={chartLeftPad} y1={y} x2={1000 - chartRightPad} y2={y} stroke="rgba(255,255,255,0.04)" strokeWidth="1" />
+                                                <text x={chartLeftPad - 15} y={y + 4} textAnchor="end" className="fill-slate-600 font-bold" style={{ fontSize: '10px' }}>
+                                                    {val >= 1000000 ? `${(val/1000000).toFixed(1)}M` : val >= 1000 ? `${(val/1000).toFixed(0)}K` : val.toFixed(0)}
+                                                </text>
+                                            </g>
+                                        );
+                                    })}
+                                    
+                                    <g transform={`translate(${chartLeftPad}, 0)`}>
+                                        <path 
+                                            d={`M 0,${chartTopPad + plotHeight} L ${stats.monthlyBreakdown.map((val, idx) => {
+                                                const x = (idx / 11) * plotWidth;
+                                                const y = chartTopPad + (1 - (val / stats.maxMonthlyValue)) * plotHeight;
+                                                return `${x},${y}`;
+                                            }).join(' L ')} L ${plotWidth},${chartTopPad + plotHeight} Z`}
+                                            fill="url(#areaGradient)"
+                                            className="opacity-10"
+                                        />
+                                        <path 
+                                            d={`M ${stats.monthlyBreakdown.map((val, idx) => {
+                                                const x = (idx / 11) * plotWidth;
+                                                const y = chartTopPad + (1 - (val / stats.maxMonthlyValue)) * plotHeight;
+                                                return `${x},${y}`;
+                                            }).join(' L ')}`}
+                                            fill="none"
+                                            stroke="#10b981"
+                                            strokeWidth="3"
+                                            className="chart-glow"
+                                            strokeLinejoin="round"
+                                            strokeLinecap="round"
+                                        />
+                                        {stats.monthlyBreakdown.map((val, idx) => {
+                                            const x = (idx / 11) * plotWidth;
+                                            const y = chartTopPad + (1 - (val / stats.maxMonthlyValue)) * plotHeight;
+                                            const active = idx === currentMonth.getMonth();
+                                            return (
+                                                <g key={idx} className="group/point cursor-pointer" onClick={() => handleMonthSelect(idx)}>
+                                                    <rect x={x - 30} y={chartTopPad} width={60} height={plotHeight} fill="transparent" />
+                                                    <circle cx={x} cy={y} r={active ? 6 : 4} fill={active ? "#10b981" : "#0a0a0c"} stroke="#10b981" strokeWidth="2.5" className="point-transition group-hover/point:r-7 group-hover/point:fill-emerald-500" />
+                                                    <text x={x} y={chartTopPad + plotHeight + 25} textAnchor="middle" className={`font-black uppercase tracking-tighter fill-current ${active ? 'text-emerald-500' : 'text-slate-600'}`} style={{ fontSize: '11px' }}>{monthsNames[idx]}</text>
+                                                    <g transform={`translate(0, -14)`}>
+                                                        <rect x={x - 35} y={y - 12} width={70} height={16} rx="4" fill="#16161a" className="opacity-80" />
+                                                        <text x={x} y={y} textAnchor="middle" className={`font-black fill-current ${active ? 'text-emerald-400' : 'text-slate-200'}`} style={{ fontSize: '10px' }}>
+                                                            ฿{val >= 1000000 ? `${(val/1000000).toFixed(2)}M` : val.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                                        </text>
+                                                    </g>
+                                                </g>
+                                            );
+                                        })}
+                                    </g>
+                                    <defs>
+                                        <linearGradient id="areaGradient" x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="0%" stopColor="#10b981" />
+                                            <stop offset="100%" stopColor="#10b981" stopOpacity="0" />
+                                        </linearGradient>
+                                    </defs>
+                                </svg>
+                            </div>
+                        </div>
+
+                        {/* KPI GRID */}
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            <div className="bg-[#16161a] border border-white/5 rounded-2xl p-6 relative overflow-hidden group shadow-lg">
+                                <p className="text-[10px] text-slate-500 font-bold uppercase mb-2 tracking-widest">Month Target Volume</p>
+                                <h2 className="text-3xl font-black text-emerald-400">฿{stats.monthlyTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</h2>
+                                <p className="text-[10px] text-slate-500 mt-2 font-bold uppercase tracking-widest">{stats.monthlyCount} Record Nodes</p>
+                            </div>
+                            <div className="bg-[#16161a] border border-white/5 rounded-2xl p-6 relative overflow-hidden group shadow-lg">
+                                <p className="text-[10px] text-slate-500 font-bold uppercase mb-2 tracking-widest">Aggregate Year Volume ({stats.selectedYear})</p>
+                                <h2 className="text-3xl font-black text-white">฿{stats.yearlyTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</h2>
+                                <p className="text-[10px] text-slate-500 mt-2 font-bold uppercase tracking-widest italic">Calculated via Column S</p>
+                            </div>
+                            <div className="bg-[#16161a] border border-white/5 rounded-2xl p-6 relative overflow-hidden group shadow-lg flex items-center justify-between">
+                                <div>
+                                    <p className="text-[10px] text-slate-500 font-bold uppercase mb-2 tracking-widest">System Health</p>
+                                    <h2 className="text-xl font-bold text-emerald-400 uppercase tracking-tighter">Live Connection</h2>
+                                    <div className="flex items-center gap-2 mt-2">
+                                        <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Secure GViz Sync Active</span>
+                                    </div>
+                                </div>
+                                <i data-lucide="shield-check" className="text-emerald-500/20 w-12 h-12"></i>
+                            </div>
+                        </div>
+
+                        {/* CALENDAR VIEW */}
+                        <div className="bg-[#16161a] border border-white/5 rounded-3xl overflow-hidden shadow-2xl">
+                            {view === 'calendar' ? (
+                                <div className="grid grid-cols-7 border-collapse relative">
+                                    {['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'].map(d => (
+                                        <div key={d} className="p-4 text-center border-b border-r border-white/5 text-[10px] font-black text-slate-600 bg-black/20 tracking-[0.4em]">{d}</div>
+                                    ))}
+                                    {calendarDays.map((cell, idx) => {
+                                        // Refined: Flip tooltip if in the last 2 rows (approx 14 cells)
+                                        const isBottomArea = idx >= calendarDays.length - 14;
+                                        return (
+                                            <div key={idx} className={`min-h-[160px] p-2 border-b border-r border-white/5 flex flex-col ${!cell.day ? 'bg-black/10' : 'hover:bg-white/[0.01]'}`}>
+                                                {cell.day && (
+                                                    <>
+                                                        <div className="flex justify-between items-center mb-3">
+                                                            <span className={`text-[10px] font-black ${cell.day === new Date().getDate() && currentMonth.getMonth() === new Date().getMonth() && currentMonth.getFullYear() === new Date().getFullYear() ? 'text-emerald-400 bg-emerald-400/10 px-2 py-1 rounded-md' : 'text-slate-600'}`}>{cell.day}</span>
+                                                            {cell.total > 0 && <span className="text-[9px] font-bold text-emerald-400 opacity-80">฿{cell.total.toLocaleString()}</span>}
+                                                        </div>
+                                                        <div className="flex-1 space-y-1">
+                                                            {cell.items.map((item, i) => {
+                                                                const isEndOfWeek = idx % 7 >= 4;
+                                                                const companyName = item['Customer Name'] || getColValue(item, ['company', 'client']) || '-';
+                                                                const projectName = item['Project Name'] || getColValue(item, ['project name']) || '-';
+                                                                
+                                                                return (
+                                                                    <div key={i} className="group relative text-[9px] p-1.5 rounded bg-white/[0.03] border border-white/5 text-slate-300 flex justify-between items-center cursor-help hover:bg-emerald-500/10 hover:border-emerald-500/20 transition-all">
+                                                                        <span className="truncate max-w-[65%] font-bold uppercase tracking-tighter">{companyName}</span>
+                                                                        <span className="text-white font-black">฿{getAmount(item).toLocaleString()}</span>
+                                                                        
+                                                                        {/* ENHANCED ADAPTIVE TOOLTIP */}
+                                                                        <div className={`tooltip-card absolute w-72 p-6 bg-[#0a0a0c] rounded-[2rem] opacity-0 group-hover:opacity-100 transition-all pointer-events-none scale-95 group-hover:scale-100 ${isEndOfWeek ? 'right-full mr-4' : 'left-full ml-4'} ${isBottomArea ? 'bottom-0' : 'top-0'}`}>
+                                                                            <div className="space-y-5 text-left">
+                                                                                <div className="pb-3 border-b border-white/10">
+                                                                                    <p className="text-[8px] text-emerald-500 font-black uppercase tracking-widest mb-1">CLIENT ENTITY</p>
+                                                                                    <h4 className="text-[12px] font-black text-white uppercase leading-tight">{companyName}</h4>
+                                                                                </div>
+                                                                                <div className="space-y-4">
+                                                                                    <div>
+                                                                                        <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">PROJECT NAME</p>
+                                                                                        <p className="text-[10px] text-slate-200 font-bold leading-tight uppercase whitespace-normal">{projectName}</p>
+                                                                                    </div>
+                                                                                    <div>
+                                                                                        <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">PROJECT ID / INSTALLMENT</p>
+                                                                                        <p className="text-[10px] text-slate-200 font-bold">{getColValue(item, ['project id']) || '-'} / {getColValue(item, ['installment']) || '1'}</p>
+                                                                                    </div>
+                                                                                    
+                                                                                    <div className="flex gap-4 p-3 bg-white/5 rounded-2xl border border-white/5">
+                                                                                        <div className="flex-1">
+                                                                                            <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">PM</p>
+                                                                                            <p className="text-[10px] text-emerald-400 font-black truncate">{getColValue(item, ['pm']) || '-'}</p>
+                                                                                        </div>
+                                                                                        <div className="flex-1 border-l border-white/10 pl-4">
+                                                                                            <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">BD</p>
+                                                                                            <p className="text-[10px] text-blue-400 font-black truncate">{getColValue(item, ['bd']) || '-'}</p>
+                                                                                        </div>
+                                                                                    </div>
+
+                                                                                    <div className="pt-3 border-t border-white/10">
+                                                                                        <p className="text-[8px] text-emerald-500 uppercase font-black tracking-widest mb-1">NET AMOUNT (VAT+WHT)</p>
+                                                                                        <p className="text-base font-black text-white tracking-tight">฿{getAmount(item).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                                                                                    </div>
+                                                                                </div>
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    </>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            ) : (
+                                <div className="overflow-x-auto max-h-[700px]">
+                                    <table className="w-full text-left">
+                                        <thead className="sticky top-0 bg-[#16161a] shadow-xl z-10">
+                                            <tr>
+                                                {data[0] && Object.keys(data[0]).filter(k => !k.startsWith('_')).map(h => (
+                                                    <th key={h} className="p-4 text-[9px] font-black text-slate-500 uppercase tracking-widest border-b border-white/5 whitespace-nowrap bg-black/40">{h}</th>
+                                                ))}
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-white/5">
+                                            {filteredData.map((row, idx) => (
+                                                <tr key={idx} className="hover:bg-white/[0.02] transition-colors">
+                                                    {Object.entries(row).filter(([k]) => !k.startsWith('_')).map(([k, val], i) => (
+                                                        <td key={i} className="p-4 text-xs text-slate-400 font-medium whitespace-nowrap">{val ? val.toString() : '-'}</td>
+                                                    ))}
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                        </div>
+                    </main>
+                    <footer className="max-w-7xl mx-auto mt-12 py-8 border-t border-white/5 flex justify-between items-center opacity-30 text-[9px] font-black uppercase tracking-[0.4em]">
+                        <p>KEEN Financial Intelligence Node // THB Module</p>
+                        <p>Optimized System Frame</p>
+                    </footer>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
