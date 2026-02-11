@@ -19,6 +19,7 @@
             background-color: #0a0a0c; 
             color: #e2e8f0;
             margin: 0;
+            overflow-x: hidden;
         }
         ::-webkit-scrollbar { width: 4px; height: 4px; }
         ::-webkit-scrollbar-track { background: transparent; }
@@ -28,10 +29,19 @@
         select { cursor: pointer; }
         option { background-color: #0a0a0c; color: #94a3b8; }
 
+        .chart-glow {
+            filter: drop-shadow(0 0 8px rgba(16, 185, 129, 0.4));
+        }
+        
+        .point-transition {
+            transition: r 0.2s ease, fill 0.2s ease;
+        }
+
         .tooltip-card {
             box-shadow: 0 20px 50px rgba(0,0,0,1);
-            border: 1px solid rgba(255,255,255,0.1);
-            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255,255,255,0.15);
+            backdrop-filter: blur(24px);
+            z-index: 9999;
         }
     </style>
 </head>
@@ -54,7 +64,6 @@
             const GID = '0';
 
             useEffect(() => {
-                // Load Google Charts library first
                 if (window.google) {
                     google.charts.load('current', { packages: ['corechart'] });
                     google.charts.setOnLoadCallback(fetchDataViaGViz);
@@ -63,11 +72,6 @@
                 }
             }, []);
 
-            /**
-             * Fetches data using Google's Query API.
-             * This method is much more reliable for local .html files
-             * as it bypasses standard CORS fetch restrictions.
-             */
             const fetchDataViaGViz = () => {
                 setLoading(true);
                 const query = new google.visualization.Query(
@@ -85,25 +89,19 @@
                     const rows = [];
                     const cols = [];
                     
-                    // Get columns (Headers)
                     for (let i = 0; i < dt.getNumberOfColumns(); i++) {
                         cols.push(dt.getColumnLabel(i) || `Col_${i}`);
                     }
 
-                    // Process Rows
                     for (let i = 0; i < dt.getNumberOfRows(); i++) {
                         const row = {};
                         for (let j = 0; j < dt.getNumberOfColumns(); j++) {
-                            // Map B1 onwards logic (GViz usually handles headers well)
                             row[cols[j]] = dt.getValue(i, j);
-                            // Also store formatted value just in case
                             row[`_${cols[j]}_fmt`] = dt.getFormattedValue(i, j);
                         }
                         rows.push(row);
                     }
 
-                    // Note: GViz handles Column B start based on the "range" if specified, 
-                    // but here we just process everything. Logic for Column S and E remains.
                     setData(rows);
                     setError(null);
                     setLoading(false);
@@ -121,7 +119,6 @@
             };
 
             const getAmount = (item) => {
-                // Strictly targeting Column S keywords "Total (VAT + WHT)"
                 const val = getColValue(item, ['total (vat + wht)', 'total vat']) || 0;
                 if (typeof val === 'number') return val;
                 const cleanVal = val.toString().replace(/[฿,$\s]/g, '');
@@ -137,20 +134,30 @@
             };
 
             const stats = useMemo(() => {
-                const currentYear = new Date().getFullYear();
-                const monthlyData = data.filter(item => {
-                    const d = getItemDate(item);
-                    return d && d.getMonth() === currentMonth.getMonth() && d.getFullYear() === currentMonth.getFullYear();
-                });
+                const selectedYear = currentMonth.getFullYear();
+                const monthlyBreakdown = Array(12).fill(0);
+                
                 const yearlyData = data.filter(item => {
                     const d = getItemDate(item);
-                    return d && d.getFullYear() === currentYear;
+                    if (d && d.getFullYear() === selectedYear) {
+                        monthlyBreakdown[d.getMonth()] += getAmount(item);
+                        return true;
+                    }
+                    return false;
                 });
+
+                const monthlyData = yearlyData.filter(item => {
+                    const d = getItemDate(item);
+                    return d && d.getMonth() === currentMonth.getMonth();
+                });
+                
                 return {
                     yearlyTotal: yearlyData.reduce((acc, curr) => acc + getAmount(curr), 0),
                     monthlyTotal: monthlyData.reduce((acc, curr) => acc + getAmount(curr), 0),
                     monthlyCount: monthlyData.length,
-                    currentYear
+                    monthlyBreakdown,
+                    selectedYear,
+                    maxMonthlyValue: Math.max(...monthlyBreakdown, 1000) // Minimum scale floor
                 };
             }, [data, currentMonth]);
 
@@ -175,33 +182,42 @@
                 return days;
             }, [currentMonth, data]);
 
+            const handleMonthSelect = (monthIndex) => {
+                const next = new Date(currentMonth);
+                next.setMonth(monthIndex);
+                setCurrentMonth(next);
+            };
+
             useEffect(() => {
                 if (window.lucide) window.lucide.createIcons();
             }, [loading, view, currentMonth]);
 
             if (loading) return (
-                <div className="min-h-screen bg-[#0a0a0c] flex flex-col items-center justify-center space-y-4">
+                <div className="min-h-screen bg-[#0a0a0c] flex flex-col items-center justify-center space-y-4 text-emerald-500 font-bold tracking-[.4em] text-sm uppercase">
                     <div className="w-12 h-12 border-4 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin"></div>
-                    <div className="text-emerald-500 font-black tracking-[.4em] text-sm uppercase">Nexus System Booting...</div>
+                    <div>Nexus System Booting...</div>
                 </div>
             );
 
             if (error) return (
                 <div className="min-h-screen bg-[#0a0a0c] flex items-center justify-center p-6 text-center">
                     <div className="max-w-xl w-full bg-red-950/10 border border-red-500/30 p-10 rounded-[3rem] shadow-2xl">
-                        <div className="mb-6 inline-flex p-4 bg-red-500/10 rounded-3xl">
-                            <i data-lucide="shield-alert" className="text-red-500 w-10 h-10"></i>
-                        </div>
+                        <i data-lucide="shield-alert" className="text-red-500 w-12 h-12 mx-auto mb-6"></i>
                         <h2 className="text-2xl font-black text-white uppercase tracking-tight mb-4">Connection Blocked</h2>
-                        <div className="bg-black/40 rounded-2xl p-4 text-left border border-white/5 mb-6 text-slate-300 text-sm leading-relaxed font-medium">
-                            {error}
-                        </div>
-                        <button onClick={() => window.location.reload()} className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-3 px-8 rounded-xl transition-all shadow-lg shadow-emerald-900/20">
-                            Retry Connection
-                        </button>
+                        <div className="bg-black/40 rounded-2xl p-4 text-left border border-white/5 mb-6 text-slate-300 text-sm">{error}</div>
+                        <button onClick={() => window.location.reload()} className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-3 px-8 rounded-xl">Retry Connection</button>
                     </div>
                 </div>
             );
+
+            // Chart Constants
+            const monthsNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            const chartLeftPad = 80;
+            const chartRightPad = 40;
+            const chartBottomPad = 40;
+            const chartTopPad = 40; // Increased to fit labels
+            const plotWidth = 1000 - chartLeftPad - chartRightPad;
+            const plotHeight = 250 - chartTopPad - chartBottomPad;
 
             return (
                 <div className="min-h-screen p-4 md:p-8 bg-[#0a0a0c]">
@@ -212,7 +228,7 @@
                             </div>
                             <div>
                                 <h1 className="text-xl font-black text-white uppercase tracking-tighter">Nexus <span className="text-emerald-500">THB</span></h1>
-                                <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Local-Link Ready // THB Protocol</p>
+                                <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Financial Grid // Local-Link Ready</p>
                             </div>
                         </div>
 
@@ -222,10 +238,14 @@
                                 <button onClick={() => setView('table')} className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${view === 'table' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20' : 'text-slate-500 hover:text-white'}`}>LEDGER</button>
                             </div>
                             <div className="flex gap-2 pr-2">
-                                <select value={currentMonth.getMonth()} onChange={(e) => setCurrentMonth(new Date(currentMonth.setMonth(e.target.value)))} className="bg-transparent text-xs font-bold text-slate-400 focus:outline-none uppercase">
-                                    {["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].map((m, i) => <option key={m} value={i} className="bg-[#0a0a0c]">{m}</option>)}
+                                <select value={currentMonth.getMonth()} onChange={(e) => handleMonthSelect(parseInt(e.target.value))} className="bg-transparent text-xs font-bold text-slate-400 focus:outline-none uppercase">
+                                    {monthsNames.map((m, i) => <option key={m} value={i} className="bg-[#0a0a0c]">{m}</option>)}
                                 </select>
-                                <select value={currentMonth.getFullYear()} onChange={(e) => setCurrentMonth(new Date(currentMonth.setFullYear(e.target.value)))} className="bg-transparent text-xs font-bold text-slate-400 focus:outline-none">
+                                <select value={currentMonth.getFullYear()} onChange={(e) => {
+                                    const next = new Date(currentMonth);
+                                    next.setFullYear(e.target.value);
+                                    setCurrentMonth(next);
+                                }} className="bg-transparent text-xs font-bold text-slate-400 focus:outline-none">
                                     {[2024, 2025, 2026, 2027].map(y => <option key={y} value={y} className="bg-[#0a0a0c]">{y}</option>)}
                                 </select>
                             </div>
@@ -233,11 +253,108 @@
 
                         <div className="relative w-full lg:w-64">
                             <i data-lucide="search" className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600 w-4 h-4"></i>
-                            <input type="text" placeholder="Filter node ledger..." className="w-full bg-[#16161a] border border-white/5 rounded-xl py-2 pl-10 pr-4 text-xs focus:outline-none focus:border-emerald-500/50" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                            <input type="text" placeholder="Search node ledger..." className="w-full bg-[#16161a] border border-white/5 rounded-xl py-2 pl-10 pr-4 text-xs focus:outline-none focus:border-emerald-500/50" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
                         </div>
                     </nav>
 
                     <main className="max-w-7xl mx-auto space-y-6">
+                        
+                        {/* ROW 1: Large Trajectory Graph with Axis & Persistent Numbers */}
+                        <div className="bg-[#16161a] border border-white/5 rounded-3xl p-8 shadow-lg flex flex-col h-[400px]">
+                            <div className="flex justify-between items-center mb-6">
+                                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.2em]">Monthly Flux Trajectory ({stats.selectedYear})</p>
+                                <div className="flex items-center gap-6">
+                                    <div className="flex items-center gap-2 text-emerald-400 text-[9px] font-black uppercase tracking-tighter">
+                                        <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div>
+                                        <span>Total (VAT + WHT) Inflow</span>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div className="flex-1 relative">
+                                <svg className="w-full h-full overflow-visible" viewBox="0 0 1000 250" preserveAspectRatio="none">
+                                    {/* Y-AXIS GRID LINES */}
+                                    {[0, 0.25, 0.5, 0.75, 1].map(v => {
+                                        const y = chartTopPad + (1 - v) * plotHeight;
+                                        const val = v * stats.maxMonthlyValue;
+                                        return (
+                                            <g key={v}>
+                                                <line x1={chartLeftPad} y1={y} x2={1000 - chartRightPad} y2={y} stroke="rgba(255,255,255,0.04)" strokeWidth="1" />
+                                                <text x={chartLeftPad - 15} y={y + 4} textAnchor="end" className="fill-slate-600 font-bold" style={{ fontSize: '10px' }}>
+                                                    {val >= 1000000 ? `${(val/1000000).toFixed(1)}M` : val >= 1000 ? `${(val/1000).toFixed(0)}K` : val.toFixed(0)}
+                                                </text>
+                                            </g>
+                                        );
+                                    })}
+                                    
+                                    <g transform={`translate(${chartLeftPad}, 0)`}>
+                                        {/* Area Gradient Fill */}
+                                        <path 
+                                            d={`M 0,${chartTopPad + plotHeight} L ${stats.monthlyBreakdown.map((val, idx) => {
+                                                const x = (idx / 11) * plotWidth;
+                                                const y = chartTopPad + (1 - (val / stats.maxMonthlyValue)) * plotHeight;
+                                                return `${x},${y}`;
+                                            }).join(' L ')} L ${plotWidth},${chartTopPad + plotHeight} Z`}
+                                            fill="url(#areaGradient)"
+                                            className="opacity-10"
+                                        />
+                                        
+                                        {/* Main Line */}
+                                        <path 
+                                            d={`M ${stats.monthlyBreakdown.map((val, idx) => {
+                                                const x = (idx / 11) * plotWidth;
+                                                const y = chartTopPad + (1 - (val / stats.maxMonthlyValue)) * plotHeight;
+                                                return `${x},${y}`;
+                                            }).join(' L ')}`}
+                                            fill="none"
+                                            stroke="#10b981"
+                                            strokeWidth="3"
+                                            className="chart-glow"
+                                            strokeLinejoin="round"
+                                            strokeLinecap="round"
+                                        />
+
+                                        {/* Monthly Markers & Labels */}
+                                        {stats.monthlyBreakdown.map((val, idx) => {
+                                            const x = (idx / 11) * plotWidth;
+                                            const y = chartTopPad + (1 - (val / stats.maxMonthlyValue)) * plotHeight;
+                                            const active = idx === currentMonth.getMonth();
+                                            
+                                            return (
+                                                <g key={idx} className="group/point cursor-pointer" onClick={() => handleMonthSelect(idx)}>
+                                                    {/* Invisible click zone */}
+                                                    <rect x={x - 30} y={chartTopPad} width={60} height={plotHeight} fill="transparent" />
+                                                    
+                                                    {/* Point Circle */}
+                                                    <circle cx={x} cy={y} r={active ? 6 : 4} fill={active ? "#10b981" : "#0a0a0c"} stroke="#10b981" strokeWidth="2.5" className="point-transition group-hover/point:r-7 group-hover/point:fill-emerald-500" />
+                                                    
+                                                    {/* Month Name */}
+                                                    <text x={x} y={chartTopPad + plotHeight + 25} textAnchor="middle" className={`font-black uppercase tracking-tighter fill-current ${active ? 'text-emerald-500' : 'text-slate-600'}`} style={{ fontSize: '11px' }}>{monthsNames[idx]}</text>
+                                                    
+                                                    {/* PERSISTENT NUMBERS ABOVE POINTS */}
+                                                    <g transform={`translate(0, -14)`}>
+                                                        {/* Text Background Box for readability */}
+                                                        <rect x={x - 35} y={y - 12} width={70} height={16} rx="4" fill="#16161a" className="opacity-80" />
+                                                        <text x={x} y={y} textAnchor="middle" className={`font-black fill-current ${active ? 'text-emerald-400' : 'text-slate-200'}`} style={{ fontSize: '10px' }}>
+                                                            ฿{val >= 1000000 ? `${(val/1000000).toFixed(2)}M` : val.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                                        </text>
+                                                    </g>
+                                                </g>
+                                            );
+                                        })}
+                                    </g>
+
+                                    <defs>
+                                        <linearGradient id="areaGradient" x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="0%" stopColor="#10b981" />
+                                            <stop offset="100%" stopColor="#10b981" stopOpacity="0" />
+                                        </linearGradient>
+                                    </defs>
+                                </svg>
+                            </div>
+                        </div>
+
+                        {/* ROW 2: KPI Grid */}
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                             <div className="bg-[#16161a] border border-white/5 rounded-2xl p-6 relative overflow-hidden group shadow-lg">
                                 <p className="text-[10px] text-slate-500 font-bold uppercase mb-2 tracking-widest">Month Target Volume</p>
@@ -246,96 +363,102 @@
                             </div>
 
                             <div className="bg-[#16161a] border border-white/5 rounded-2xl p-6 relative overflow-hidden group shadow-lg">
-                                <p className="text-[10px] text-slate-500 font-bold uppercase mb-2 tracking-widest">Aggregate Year Volume ({stats.currentYear})</p>
+                                <p className="text-[10px] text-slate-500 font-bold uppercase mb-2 tracking-widest">Aggregate Year Volume ({stats.selectedYear})</p>
                                 <h2 className="text-3xl font-black text-white">฿{stats.yearlyTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</h2>
                                 <p className="text-[10px] text-slate-500 mt-2 font-bold uppercase tracking-widest italic">Calculated via Column S</p>
                             </div>
 
-                            <div className="bg-[#16161a] border border-white/5 rounded-2xl p-6 relative overflow-hidden group shadow-lg">
-                                <p className="text-[10px] text-slate-500 font-bold uppercase mb-2 tracking-widest">System Health</p>
-                                <h2 className="text-xl font-bold text-emerald-400 uppercase tracking-tighter">Local Link Active</h2>
-                                <div className="flex items-center gap-2 mt-4">
-                                    <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">GViz Secure Protocol Engaged</span>
+                            <div className="bg-[#16161a] border border-white/5 rounded-2xl p-6 relative overflow-hidden group shadow-lg flex items-center justify-between">
+                                <div>
+                                    <p className="text-[10px] text-slate-500 font-bold uppercase mb-2 tracking-widest">System Health</p>
+                                    <h2 className="text-xl font-bold text-emerald-400 uppercase tracking-tighter">Live Link Active</h2>
+                                    <div className="flex items-center gap-2 mt-2">
+                                        <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">GViz Secure Sync</span>
+                                    </div>
                                 </div>
+                                <i data-lucide="zap" className="text-emerald-500/20 w-12 h-12"></i>
                             </div>
                         </div>
 
+                        {/* Calendar / Ledger */}
                         <div className="bg-[#16161a] border border-white/5 rounded-3xl overflow-hidden shadow-2xl">
                             {view === 'calendar' ? (
-                                <div className="grid grid-cols-7 border-collapse">
+                                <div className="grid grid-cols-7 border-collapse relative">
                                     {['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'].map(d => (
                                         <div key={d} className="p-4 text-center border-b border-r border-white/5 text-[10px] font-black text-slate-600 bg-black/20 tracking-[0.4em]">{d}</div>
                                     ))}
-                                    {calendarDays.map((cell, idx) => (
-                                        <div key={idx} className={`min-h-[160px] p-2 border-b border-r border-white/5 flex flex-col ${!cell.day ? 'bg-black/10' : 'hover:bg-white/[0.01]'}`}>
-                                            {cell.day && (
-                                                <>
-                                                    <div className="flex justify-between items-center mb-3">
-                                                        <span className={`text-[10px] font-black ${cell.day === new Date().getDate() && currentMonth.getMonth() === new Date().getMonth() ? 'text-emerald-400 bg-emerald-400/10 px-2 py-1 rounded-md' : 'text-slate-600'}`}>{cell.day}</span>
-                                                        {cell.total > 0 && <span className="text-[9px] font-bold text-emerald-400 opacity-80">฿{cell.total.toLocaleString()}</span>}
-                                                    </div>
-                                                    <div className="flex-1 space-y-1">
-                                                        {cell.items.map((item, i) => {
-                                                            const isEndOfWeek = idx % 7 >= 4;
-                                                            const companyName = item['Customer Name'] || getColValue(item, ['company', 'client']) || '-';
-                                                            const projectName = item['Project Name'] || getColValue(item, ['project name']) || '-';
-                                                            return (
-                                                                <div key={i} className="group relative text-[9px] p-1.5 rounded bg-white/[0.03] border border-white/5 text-slate-400 flex justify-between items-center cursor-help hover:bg-emerald-500/10 hover:border-emerald-500/20 transition-all">
-                                                                    <span className="truncate max-w-[65%] font-bold uppercase tracking-tighter text-slate-300">{companyName}</span>
-                                                                    <span className="text-white font-black">฿{getAmount(item).toLocaleString()}</span>
-                                                                    
-                                                                    {/* Tooltip Card */}
-                                                                    <div className={`absolute top-0 w-64 p-5 bg-[#0a0a0c] border border-white/10 rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,1)] z-[999] opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none backdrop-blur-2xl ${isEndOfWeek ? 'right-full mr-2' : 'left-full ml-2'}`}>
-                                                                        <div className="space-y-4">
-                                                                            <div className="pb-3 border-b border-white/5">
-                                                                                <p className="text-[8px] text-emerald-500 font-black uppercase tracking-widest mb-1">CUSTOMER</p>
-                                                                                <h4 className="text-[11px] font-black text-white uppercase leading-tight">{companyName}</h4>
-                                                                            </div>
-                                                                            <div className="space-y-3 text-left">
-                                                                                <div>
-                                                                                    <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">PROJECT NAME (COLUMN E)</p>
-                                                                                    <p className="text-[10px] text-slate-200 font-bold leading-tight uppercase">{projectName}</p>
+                                    {calendarDays.map((cell, idx) => {
+                                        const isBottomRow = idx >= calendarDays.length - 7;
+                                        return (
+                                            <div key={idx} className={`min-h-[160px] p-2 border-b border-r border-white/5 flex flex-col ${!cell.day ? 'bg-black/10' : 'hover:bg-white/[0.01]'}`}>
+                                                {cell.day && (
+                                                    <>
+                                                        <div className="flex justify-between items-center mb-3">
+                                                            <span className={`text-[10px] font-black ${cell.day === new Date().getDate() && currentMonth.getMonth() === new Date().getMonth() && currentMonth.getFullYear() === new Date().getFullYear() ? 'text-emerald-400 bg-emerald-400/10 px-2 py-1 rounded-md' : 'text-slate-600'}`}>{cell.day}</span>
+                                                            {cell.total > 0 && <span className="text-[9px] font-bold text-emerald-400 opacity-80">฿{cell.total.toLocaleString()}</span>}
+                                                        </div>
+                                                        <div className="flex-1 space-y-1">
+                                                            {cell.items.map((item, i) => {
+                                                                const isEndOfWeek = idx % 7 >= 4;
+                                                                const companyName = item['Customer Name'] || getColValue(item, ['company', 'client']) || '-';
+                                                                const projectName = item['Project Name'] || getColValue(item, ['project name']) || '-';
+                                                                
+                                                                return (
+                                                                    <div key={i} className="group relative text-[9px] p-1.5 rounded bg-white/[0.03] border border-white/5 text-slate-300 flex justify-between items-center cursor-help hover:bg-emerald-500/10 hover:border-emerald-500/20 transition-all">
+                                                                        <span className="truncate max-w-[65%] font-bold uppercase tracking-tighter">{companyName}</span>
+                                                                        <span className="text-white font-black">฿{getAmount(item).toLocaleString()}</span>
+                                                                        
+                                                                        {/* ADAPTIVE TOOLTIP */}
+                                                                        <div className={`tooltip-card absolute w-64 p-5 bg-[#0a0a0c] rounded-2xl opacity-0 group-hover:opacity-100 transition-all pointer-events-none scale-95 group-hover:scale-100 ${isEndOfWeek ? 'right-full mr-4' : 'left-full ml-4'} ${isBottomRow ? 'bottom-0' : 'top-0'}`}>
+                                                                            <div className="space-y-4">
+                                                                                <div className="pb-3 border-b border-white/10">
+                                                                                    <p className="text-[8px] text-emerald-500 font-black uppercase tracking-widest mb-1 text-left">CUSTOMER</p>
+                                                                                    <h4 className="text-[11px] font-black text-white uppercase leading-tight text-left">{companyName}</h4>
                                                                                 </div>
-                                                                                <div>
-                                                                                    <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">PROJECT ID / INSTALLMENT</p>
-                                                                                    <p className="text-[10px] text-slate-200 font-bold">{getColValue(item, ['project id']) || '-'} / {getColValue(item, ['installment']) || '1'}</p>
-                                                                                </div>
-                                                                                
-                                                                                <div className="flex gap-4 p-2 bg-white/5 rounded-lg border border-white/5">
-                                                                                    <div className="flex-1">
-                                                                                        <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">PM</p>
-                                                                                        <p className="text-[10px] text-emerald-400 font-black">{getColValue(item, ['pm']) || '-'}</p>
+                                                                                <div className="space-y-3 text-left">
+                                                                                    <div>
+                                                                                        <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1 text-left">PROJECT NAME (COLUMN E)</p>
+                                                                                        <p className="text-[10px] text-slate-200 font-bold leading-tight uppercase text-left">{projectName}</p>
                                                                                     </div>
-                                                                                    <div className="flex-1 border-l border-white/10 pl-3">
-                                                                                        <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">BD</p>
-                                                                                        <p className="text-[10px] text-blue-400 font-black">{getColValue(item, ['bd']) || '-'}</p>
+                                                                                    <div>
+                                                                                        <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1 text-left">PROJECT ID / INSTALLMENT</p>
+                                                                                        <p className="text-[10px] text-slate-200 font-bold text-left">{getColValue(item, ['project id']) || '-'} / {getColValue(item, ['installment']) || '1'}</p>
                                                                                     </div>
-                                                                                </div>
-
-                                                                                <div className="pt-2 border-t border-white/5">
-                                                                                    <p className="text-[8px] text-emerald-500 uppercase font-black tracking-widest mb-1">NET AMOUNT (VAT+WHT)</p>
-                                                                                    <p className="text-sm font-black text-white tracking-tight">฿{getAmount(item).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                                                                                    <div className="flex gap-4 p-2 bg-white/5 rounded-lg border border-white/5 text-left">
+                                                                                        <div className="flex-1">
+                                                                                            <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1 text-left">PM</p>
+                                                                                            <p className="text-[10px] text-emerald-400 font-black truncate text-left">{getColValue(item, ['pm']) || '-'}</p>
+                                                                                        </div>
+                                                                                        <div className="flex-1 border-l border-white/10 pl-3">
+                                                                                            <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1 text-left">BD</p>
+                                                                                            <p className="text-[10px] text-blue-400 font-black truncate text-left">{getColValue(item, ['bd']) || '-'}</p>
+                                                                                        </div>
+                                                                                    </div>
+                                                                                    <div className="pt-2 border-t border-white/10 text-left">
+                                                                                        <p className="text-[8px] text-emerald-500 uppercase font-black tracking-widest mb-1 text-left">NET AMOUNT (VAT+WHT)</p>
+                                                                                        <p className="text-sm font-black text-white tracking-tight text-left">฿{getAmount(item).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                                                                                    </div>
                                                                                 </div>
                                                                             </div>
                                                                         </div>
                                                                     </div>
-                                                                </div>
-                                                            );
-                                                        })}
-                                                    </div>
-                                                </>
-                                            )}
-                                        </div>
-                                    ))}
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    </>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
                                 </div>
                             ) : (
                                 <div className="overflow-x-auto max-h-[700px]">
                                     <table className="w-full text-left">
-                                        <thead className="sticky top-0 bg-[#16161a] shadow-xl">
+                                        <thead className="sticky top-0 bg-[#16161a] shadow-xl z-10">
                                             <tr>
                                                 {data[0] && Object.keys(data[0]).filter(k => !k.startsWith('_')).map(h => (
-                                                    <th key={h} className="p-4 text-[9px] font-black text-slate-500 uppercase tracking-widest border-b border-white/5 whitespace-nowrap">{h}</th>
+                                                    <th key={h} className="p-4 text-[9px] font-black text-slate-500 uppercase tracking-widest border-b border-white/5 whitespace-nowrap bg-black/40">{h}</th>
                                                 ))}
                                             </tr>
                                         </thead>
@@ -353,8 +476,9 @@
                             )}
                         </div>
                     </main>
-                    <footer className="max-w-7xl mx-auto mt-12 py-6 border-t border-white/5 flex justify-between items-center opacity-30">
-                        <p className="text-[8px] font-black uppercase tracking-[0.4em]">Nexus Intel Layer // THB Protocol</p>
+                    <footer className="max-w-7xl mx-auto mt-12 py-8 border-t border-white/5 flex justify-between items-center opacity-30 text-[9px] font-black uppercase tracking-[0.4em]">
+                        <p>Nexus Financial Intel Layer // THB Protocol</p>
+                        <p>Numbers persistent on flux-node</p>
                     </footer>
                 </div>
             );
